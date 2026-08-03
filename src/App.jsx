@@ -682,9 +682,12 @@ function Eventos({data,setData}) {
                 {ev.descripcion&&<div style={{fontSize:12,color:C.muted,marginBottom:10}}>📋 {ev.descripcion}</div>}
 
                 {ev.finalizado&&reporte&&(
-                  <button style={{...styles.btn("slate"),fontSize:12,width:"100%",justifyContent:"center"}} onClick={()=>setShowReporte(ev)}>
-                    <Icon name="pie" size={13}/> Ver reporte completo
-                  </button>
+                  <div style={{marginTop:8}}>
+                    <button style={{...styles.btn("slate"),fontSize:12,width:"100%",justifyContent:"center",marginBottom:8}} onClick={()=>setShowReporte(ev)}>
+                      <Icon name="pie" size={13}/> Ver reporte completo
+                    </button>
+                    <EstadisticasEvento evento={ev} data={data}/>
+                  </div>
                 )}
 
                 {/* Lista de inscritos */}
@@ -933,6 +936,7 @@ const NAV=[
   {id:"personas",label:"Personas",icon:"users",section:"Gestión"},
   {id:"expedientes",label:"Expedientes",icon:"folder",section:"Gestión"},
   {id:"eventos",label:"Eventos",icon:"calendar",section:"Gestión"},
+  {id:"gastos",label:"Solicitudes de gasto",icon:"dollar",section:"Gestión"},
   {id:"config",label:"Configuración",icon:"map",section:"Sistema"},
 ];
 
@@ -940,25 +944,57 @@ export default function App() {
   const [view,setView]=useState("dashboard");
   const [data,setData]=useState(null);
   const [loading,setLoading]=useState(true);
+  const [menuOpen,setMenuOpen]=useState(false);
 
-  useEffect(()=>{ loadData().then(d=>{setData(d);setLoading(false);}); },[]);
+  useEffect(()=>{
+    // Cargar EmailJS
+    const script=document.createElement("script");
+    script.src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js";
+    script.onload=()=>window.emailjs.init("bW0siuepAncPncYKm");
+    document.head.appendChild(script);
+    loadData().then(d=>{setData(d);setLoading(false);});
+  },[]);
 
-  if(loading||!data)return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:C.bg,color:C.muted,fontSize:14}}>Cargando sistema...</div>;
+  if(loading||!data)return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:C.bg,color:C.muted,fontSize:14}}>Cargando SIGEAC...</div>;
 
   const sections=[...new Set(NAV.map(n=>n.section))];
+
+  // Sidebar responsive
+  const sidebarStyle = {
+    ...styles.sidebar,
+    position: window.innerWidth<768?"fixed":"relative",
+    left: window.innerWidth<768?(menuOpen?"0":"-260px"):"auto",
+    top:0, zIndex:200,
+    transition:"left .25s",
+    height:"100vh",
+    overflowY:"auto",
+  };
+
   return (
     <div style={{...styles.app,display:"flex"}}>
-      <div style={styles.sidebar}>
+      {/* Overlay móvil */}
+      {menuOpen&&window.innerWidth<768&&(
+        <div onClick={()=>setMenuOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.4)",zIndex:199}}/>
+      )}
+
+      {/* Botón hamburguesa móvil */}
+      {window.innerWidth<768&&(
+        <button onClick={()=>setMenuOpen(m=>!m)} style={{position:"fixed",top:12,left:12,zIndex:300,background:C.slate,border:"none",borderRadius:8,padding:"8px 10px",cursor:"pointer",color:"#fff"}}>
+          <Icon name="home" size={18}/>
+        </button>
+      )}
+
+      <div style={sidebarStyle}>
         <div style={styles.sidebarLogo}>
-          <div style={styles.sidebarLogoTitle}>Sistema de Gestión</div>
-          <div style={styles.sidebarLogoSub}>Asociaciones Civiles</div>
+          <div style={styles.sidebarLogoTitle}>SIGEAC</div>
+          <div style={styles.sidebarLogoSub}>Sistema de Gestión AC</div>
         </div>
         <div style={{flex:1,padding:"12px 0"}}>
           {sections.map(sec=>(
             <div key={sec}>
               <div style={styles.sidebarSection}>{sec}</div>
               {NAV.filter(n=>n.section===sec).map(n=>(
-                <div key={n.id} style={styles.sidebarItem(view===n.id)} onClick={()=>setView(n.id)}>
+                <div key={n.id} style={styles.sidebarItem(view===n.id)} onClick={()=>{setView(n.id);setMenuOpen(false);}}>
                   <Icon name={n.icon} size={15}/>{n.label}
                 </div>
               ))}
@@ -967,16 +1003,440 @@ export default function App() {
         </div>
         <div style={{padding:"0 16px"}}>
           <div style={{fontSize:11,color:"rgba(255,255,255,.3)",borderTop:"1px solid rgba(255,255,255,.1)",paddingTop:12}}>
-            {data.personas.length} personas · consecutivo #{data.consecutivoGlobal||0}
+            {data.personas.length} personas · #{data.consecutivoGlobal||0}
           </div>
         </div>
       </div>
-      <div style={styles.main}>
+
+      <div style={{...styles.main,paddingTop:window.innerWidth<768?"56px":"32px"}}>
         {view==="dashboard"&&<Dashboard data={data}/>}
         {view==="personas"&&<Personas data={data} setData={setData}/>}
         {view==="expedientes"&&<Expedientes data={data} setData={setData}/>}
         {view==="eventos"&&<Eventos data={data} setData={setData}/>}
+        {view==="gastos"&&<Gastos data={data} setData={setData}/>}
         {view==="config"&&<Configuracion data={data} setData={setData}/>}
+      </div>
+    </div>
+  );
+}
+
+// ─── MÓDULO: SOLICITUDES DE GASTO ────────────────────────────────────────────
+const CENTROS_COSTO = [
+  "Programa de Becas","Área Cultural","Área Social","Área Educativa",
+  "Área Comunitaria","Operación General","Administración","Otro"
+];
+const ESTATUS_GASTO = ["Pendiente","Aprobado","Pagado","Rechazado"];
+const BANCOS = ["BBVA","Banamex / Citibanamex","Santander","Banorte","HSBC",
+  "Inbursa","Scotiabank","BanBajío","Otro"];
+
+async function enviarCorreoTesoreria(solicitud) {
+  try {
+    await window.emailjs.send(
+      "service_pcjaz5g",
+      "template_wgi8z9n",
+      {
+        asociacion: solicitud.asociacion,
+        proveedor: solicitud.proveedor,
+        descripcion: solicitud.descripcion,
+        monto_mxn: solicitud.montoMXN ? `$${Number(solicitud.montoMXN).toLocaleString("es-MX")}` : "—",
+        monto_usd: solicitud.montoUSD ? `$${solicitud.montoUSD} USD` : "—",
+        rfc: solicitud.rfcProveedor || "—",
+        "clave-interbancaria": solicitud.clabe || solicitud.cuenta || "—",
+        "centrode-costo": solicitud.centroCosto,
+        solicitante: solicitud.solicitante,
+        finalidad: solicitud.finalidad,
+        fecha: new Date().toLocaleDateString("es-MX"),
+      },
+      "bW0siuepAncPncYKm"
+    );
+  } catch(e) { console.error("Error enviando correo:", e); }
+}
+
+function Gastos({data, setData}) {
+  const [showModal, setShowModal] = useState(false);
+  const [showProv, setShowProv] = useState(false);
+  const [filtroEstatus, setFiltroEstatus] = useState("todos");
+  const [filtroAsoc, setFiltroAsoc] = useState("todas");
+  const [form, setForm] = useState({});
+  const [busqProv, setBusqProv] = useState("");
+  const [conceptos, setConceptos] = useState([{desc:"",cantidad:0,precio:0}]);
+  const [enviandoCorreo, setEnviandoCorreo] = useState(false);
+  const { gastos=[], proveedores=[], asociaciones, areas } = data;
+
+  const provsFiltrados = proveedores.filter(p =>
+    p.nombre?.toLowerCase().includes(busqProv.toLowerCase()) ||
+    p.rfc?.toLowerCase().includes(busqProv.toLowerCase())
+  );
+
+  function seleccionarProveedor(prov) {
+    setForm(f => ({
+      ...f,
+      proveedor: prov.nombre,
+      rfcProveedor: prov.rfc,
+      banco: prov.banco,
+      clabe: prov.clabe,
+      cuenta: prov.cuenta,
+    }));
+    setShowProv(false);
+    setBusqProv("");
+  }
+
+  function calcTotal() {
+    return conceptos.reduce((s,c) => s + (Number(c.cantidad)||0)*(Number(c.precio)||0), 0);
+  }
+
+  function agregarConcepto() {
+    setConceptos(prev => [...prev, {desc:"",cantidad:0,precio:0}]);
+  }
+  function removeConcepto(i) {
+    setConceptos(prev => prev.filter((_,idx) => idx !== i));
+  }
+  function updateConcepto(i, field, val) {
+    setConceptos(prev => prev.map((c,idx) => idx===i ? {...c,[field]:val} : c));
+  }
+
+  async function save() {
+    if (!form.solicitante?.trim()) return alert("Ingresa el nombre del solicitante.");
+    if (!form.asociacionId) return alert("Selecciona la asociación.");
+    if (!form.proveedor?.trim()) return alert("Ingresa el nombre del proveedor.");
+    if (!form.descripcion?.trim()) return alert("Ingresa la descripción del gasto.");
+    if (!form.centroCosto) return alert("Selecciona el centro de costo.");
+    if (conceptos.length === 0) return alert("Agrega al menos un concepto.");
+
+    const total = calcTotal();
+    const asoc = asociaciones.find(a => a.id === form.asociacionId);
+
+    const solicitud = {
+      ...form,
+      id: uid(),
+      fecha: new Date().toISOString(),
+      estatus: "Pendiente",
+      conceptos,
+      montoMXN: total,
+      asociacion: asoc?.nombre,
+    };
+
+    // Guardar proveedor si es nuevo
+    const provExiste = proveedores.some(p =>
+      p.rfc === form.rfcProveedor || p.nombre === form.proveedor
+    );
+
+    setData(prev => {
+      const nuevosProvs = provExiste ? prev.proveedores||[] : [
+        ...(prev.proveedores||[]),
+        {
+          id: uid(),
+          nombre: form.proveedor,
+          rfc: form.rfcProveedor||"",
+          banco: form.banco||"",
+          clabe: form.clabe||"",
+          cuenta: form.cuenta||"",
+        }
+      ];
+      const next = {
+        ...prev,
+        gastos: [...(prev.gastos||[]), solicitud],
+        proveedores: nuevosProvs,
+      };
+      saveData(next);
+      return next;
+    });
+
+    setEnviandoCorreo(true);
+    await enviarCorreoTesoreria(solicitud);
+    setEnviandoCorreo(false);
+
+    setShowModal(false);
+    setForm({});
+    setConceptos([{desc:"",cantidad:0,precio:0}]);
+    alert("✓ Solicitud registrada. Se envió notificación a tesorería.");
+  }
+
+  function cambiarEstatus(id, estatus) {
+    setData(prev => {
+      const next = {
+        ...prev,
+        gastos: prev.gastos.map(g => g.id===id ? {...g,estatus} : g)
+      };
+      saveData(next); return next;
+    });
+  }
+
+  const lista = gastos.filter(g => {
+    const matchE = filtroEstatus==="todos" || g.estatus===filtroEstatus;
+    const matchA = filtroAsoc==="todas" || g.asociacionId===filtroAsoc;
+    return matchE && matchA;
+  });
+
+  const statusColor = {
+    Pendiente: {c:C.gold, bg:C.goldLight},
+    Aprobado: {c:C.olive, bg:C.oliveLight},
+    Pagado: {c:C.slate, bg:C.slateLight},
+    Rechazado: {c:C.danger, bg:C.dangerLight},
+  };
+
+  return (
+    <div>
+      <div style={{...styles.header,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div>
+          <div style={styles.pageTitle}>Solicitudes de Gasto</div>
+          <div style={styles.pageSubtitle}>{lista.length} solicitudes · Total: {fmtCurrency(lista.reduce((s,g)=>s+(Number(g.montoMXN)||0),0))}</div>
+        </div>
+        <button style={styles.btn("purple")} onClick={()=>{setForm({asociacionId:asociaciones[0]?.id});setConceptos([{desc:"",cantidad:0,precio:0}]);setShowModal(true);}}>
+          <Icon name="plus" size={15}/> Nueva solicitud
+        </button>
+      </div>
+
+      {/* Filtros */}
+      <div style={{display:"flex",gap:12,marginBottom:20}}>
+        <select style={{...styles.select,width:200}} value={filtroAsoc} onChange={e=>setFiltroAsoc(e.target.value)}>
+          <option value="todas">Todas las asociaciones</option>
+          {asociaciones.map(a=><option key={a.id} value={a.id}>{a.nombre}</option>)}
+        </select>
+        <select style={{...styles.select,width:160}} value={filtroEstatus} onChange={e=>setFiltroEstatus(e.target.value)}>
+          <option value="todos">Todos los estatus</option>
+          {ESTATUS_GASTO.map(e=><option key={e} value={e}>{e}</option>)}
+        </select>
+      </div>
+
+      {/* Tabla de solicitudes */}
+      {lista.length===0 ? (
+        <div style={{...styles.card,textAlign:"center",padding:40,color:C.muted}}>
+          <Icon name="dollar" size={32}/><div style={{marginTop:12}}>No hay solicitudes registradas.</div>
+        </div>
+      ) : (
+        <div style={styles.card}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+            <thead>
+              <tr style={{borderBottom:`2px solid ${C.border}`}}>
+                {["Fecha","Solicitante","Proveedor","Descripción","Centro de Costo","Monto MXN","Estatus",""].map(h=>(
+                  <th key={h} style={{textAlign:"left",padding:"8px 12px",fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:0.5}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {lista.map(g=>{
+                const sc = statusColor[g.estatus]||{c:C.muted,bg:C.bg};
+                return (
+                  <tr key={g.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                    <td style={{padding:"10px 12px",color:C.muted,whiteSpace:"nowrap"}}>{fmtDate(g.fecha)}</td>
+                    <td style={{padding:"10px 12px",fontWeight:600}}>{g.solicitante}</td>
+                    <td style={{padding:"10px 12px"}}>{g.proveedor}</td>
+                    <td style={{padding:"10px 12px",color:C.muted,maxWidth:180}}>{g.descripcion}</td>
+                    <td style={{padding:"10px 12px"}}><span style={styles.badge(C.slate,C.slateLight)}>{g.centroCosto}</span></td>
+                    <td style={{padding:"10px 12px",fontWeight:700}}>{fmtCurrency(g.montoMXN)}</td>
+                    <td style={{padding:"10px 12px"}}>
+                      <select
+                        style={{...styles.select,width:"auto",padding:"4px 8px",background:sc.bg,color:sc.c,fontWeight:700,border:`1px solid ${sc.c}33`}}
+                        value={g.estatus}
+                        onChange={e=>cambiarEstatus(g.id,e.target.value)}
+                      >
+                        {ESTATUS_GASTO.map(e=><option key={e} value={e}>{e}</option>)}
+                      </select>
+                    </td>
+                    <td style={{padding:"10px 12px"}}>
+                      <button style={{...styles.btn("ghost"),padding:"5px 10px",fontSize:11}} onClick={()=>window.print()}>
+                        <Icon name="clipboard" size={12}/>
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* MODAL NUEVA SOLICITUD */}
+      {showModal && (
+        <Modal title="Nueva solicitud de gasto" onClose={()=>setShowModal(false)} width={700}>
+          {/* Datos generales */}
+          <div style={{fontWeight:700,fontSize:13,color:C.slate,marginBottom:12,textTransform:"uppercase",letterSpacing:0.5}}>Datos generales</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+            <Field label="Solicitante *"><input style={styles.input} value={form.solicitante||""} onChange={e=>setForm(f=>({...f,solicitante:e.target.value}))}/></Field>
+            <Field label="Asociación *">
+              <select style={styles.select} value={form.asociacionId||""} onChange={e=>setForm(f=>({...f,asociacionId:e.target.value}))}>
+                {asociaciones.map(a=><option key={a.id} value={a.id}>{a.nombre}</option>)}
+              </select>
+            </Field>
+            <Field label="Centro de costo *">
+              <select style={styles.select} value={form.centroCosto||""} onChange={e=>setForm(f=>({...f,centroCosto:e.target.value}))}>
+                <option value="">Seleccionar...</option>
+                {CENTROS_COSTO.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Finalidad del gasto *"><input style={styles.input} placeholder="¿Para qué programa o actividad?" value={form.finalidad||""} onChange={e=>setForm(f=>({...f,finalidad:e.target.value}))}/></Field>
+          </div>
+          <Field label="Descripción del gasto *"><input style={styles.input} placeholder="Describe el gasto..." value={form.descripcion||""} onChange={e=>setForm(f=>({...f,descripcion:e.target.value}))}/></Field>
+
+          {/* Proveedor */}
+          <div style={{fontWeight:700,fontSize:13,color:C.slate,margin:"20px 0 12px",textTransform:"uppercase",letterSpacing:0.5}}>Datos del proveedor</div>
+          <div style={{display:"flex",gap:10,marginBottom:12}}>
+            <div style={{flex:1,position:"relative"}}>
+              <input style={styles.input} placeholder="Nombre o RFC del proveedor..." value={busqProv} onChange={e=>{setBusqProv(e.target.value);setForm(f=>({...f,proveedor:e.target.value}));}} onFocus={()=>setShowProv(true)}/>
+              {showProv && busqProv && provsFiltrados.length>0 && (
+                <div style={{position:"absolute",top:"100%",left:0,right:0,background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,zIndex:100,boxShadow:"0 4px 16px rgba(0,0,0,.1)"}}>
+                  {provsFiltrados.map(p=>(
+                    <div key={p.id} style={{padding:"10px 14px",cursor:"pointer",borderBottom:`1px solid ${C.border}`}} onClick={()=>seleccionarProveedor(p)}>
+                      <div style={{fontWeight:600,fontSize:13}}>{p.nombre}</div>
+                      <div style={{fontSize:11,color:C.muted}}>RFC: {p.rfc} · {p.banco}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Field label="RFC del proveedor"><input style={styles.input} value={form.rfcProveedor||""} onChange={e=>setForm(f=>({...f,rfcProveedor:e.target.value.toUpperCase()}))}/></Field>
+            <Field label="No. de factura"><input style={styles.input} value={form.noFactura||""} onChange={e=>setForm(f=>({...f,noFactura:e.target.value}))}/></Field>
+            <Field label="Banco">
+              <select style={styles.select} value={form.banco||""} onChange={e=>setForm(f=>({...f,banco:e.target.value}))}>
+                <option value="">Seleccionar...</option>
+                {BANCOS.map(b=><option key={b} value={b}>{b}</option>)}
+              </select>
+            </Field>
+            <Field label="CLABE interbancaria"><input style={{...styles.input,fontFamily:"monospace"}} value={form.clabe||""} maxLength={18} onChange={e=>setForm(f=>({...f,clabe:e.target.value}))}/></Field>
+            <Field label="No. de cuenta (si no hay CLABE)"><input style={{...styles.input,fontFamily:"monospace"}} value={form.cuenta||""} onChange={e=>setForm(f=>({...f,cuenta:e.target.value}))}/></Field>
+            <Field label="Monto en USD (si aplica)"><input type="number" style={styles.input} value={form.montoUSD||""} onChange={e=>setForm(f=>({...f,montoUSD:e.target.value}))}/></Field>
+          </div>
+
+          {/* Conceptos */}
+          <div style={{fontWeight:700,fontSize:13,color:C.slate,margin:"20px 0 12px",textTransform:"uppercase",letterSpacing:0.5}}>Conceptos del gasto</div>
+          {conceptos.map((c,i)=>(
+            <div key={i} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr auto",gap:10,marginBottom:10,alignItems:"end"}}>
+              <div><label style={styles.label}>Descripción</label><input style={styles.input} value={c.desc} onChange={e=>updateConcepto(i,"desc",e.target.value)} placeholder="Concepto..."/></div>
+              <div><label style={styles.label}>Cantidad</label><input type="number" style={styles.input} value={c.cantidad} onChange={e=>updateConcepto(i,"cantidad",e.target.value)} min={0}/></div>
+              <div><label style={styles.label}>Precio unitario</label><input type="number" style={styles.input} value={c.precio} onChange={e=>updateConcepto(i,"precio",e.target.value)} min={0}/></div>
+              <button style={{...styles.btn("ghost"),color:C.danger,padding:"9px 10px"}} onClick={()=>removeConcepto(i)}><Icon name="trash" size={14}/></button>
+            </div>
+          ))}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4}}>
+            <button style={styles.btn("neutral")} onClick={agregarConcepto}><Icon name="plus" size={13}/> Agregar concepto</button>
+            <div style={{background:C.goldLight,border:`1px solid ${C.goldLight}`,borderRadius:8,padding:"8px 16px"}}>
+              <span style={{fontSize:12,color:C.muted,marginRight:8}}>TOTAL MXN</span>
+              <span style={{fontSize:18,fontWeight:800,color:C.gold}}>{fmtCurrency(calcTotal())}</span>
+            </div>
+          </div>
+
+          <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:20}}>
+            <button style={styles.btn("neutral")} onClick={()=>setShowModal(false)}>Cancelar</button>
+            <button style={styles.btn()} onClick={save} disabled={enviandoCorreo}>
+              {enviandoCorreo ? "Enviando..." : <><Icon name="check" size={14}/> Registrar solicitud</>}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ─── ESTADÍSTICAS POR EVENTO ──────────────────────────────────────────────────
+function EstadisticasEvento({evento, data}) {
+  const { participaciones, personas } = data;
+  const partics = participaciones.filter(p => p.eventoId === evento.id);
+  const personasEvento = partics.map(p => personas.find(x => x.id === p.personaId)).filter(Boolean);
+
+  // Grupos de edad
+  function getEdad(fechaNac) {
+    if (!fechaNac) return null;
+    const hoy = new Date();
+    const nac = new Date(fechaNac);
+    let edad = hoy.getFullYear() - nac.getFullYear();
+    const m = hoy.getMonth() - nac.getMonth();
+    if (m < 0 || (m === 0 && hoy.getDate() < nac.getDate())) edad--;
+    return edad;
+  }
+  function getGrupoEdad(edad) {
+    if (edad === null) return "No especificado";
+    if (edad >= 6 && edad <= 12) return "6–12 años";
+    if (edad >= 13 && edad <= 17) return "13–17 años";
+    if (edad >= 18 && edad <= 25) return "18–25 años";
+    if (edad >= 26 && edad <= 59) return "26–59 años";
+    if (edad >= 60) return "60+ años";
+    return "Otro";
+  }
+
+  const grupos = {};
+  const generos = { Masculino:0, Femenino:0, "No especificado":0 };
+
+  personasEvento.forEach(p => {
+    const edad = getEdad(p.fechaNac);
+    const grupo = getGrupoEdad(edad);
+    grupos[grupo] = (grupos[grupo]||0) + 1;
+    const gen = p.sexo || "No especificado";
+    generos[gen] = (generos[gen]||0) + 1;
+  });
+
+  const totalSesiones = evento.sesiones?.length || 0;
+  const totalMinutos = evento.sesiones?.reduce((s,x)=>s+(Number(x.duracionMin)||0),0)||0;
+  const costoTotal = Number(evento.costoTotal)||0;
+  const costoParticipante = partics.length>0 ? costoTotal/partics.length : 0;
+
+  const COLORES_EDAD = ["#B5522A","#5A6B3A","#3B5068","#9A7B2A","#6B3A8A","#888"];
+  const GRUPOS_ORDEN = ["6–12 años","13–17 años","18–25 años","26–59 años","60+ años","No especificado"];
+  const maxGrupo = Math.max(...Object.values(grupos), 1);
+
+  return (
+    <div style={{marginTop:16}}>
+      {/* Métricas principales */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:16}}>
+        {[
+          {l:"Participantes",v:partics.length,c:C.terra,bg:C.terraLight},
+          {l:"Sesiones",v:totalSesiones,c:C.slate,bg:C.slateLight},
+          {l:"Horas totales",v:`${(totalMinutos/60).toFixed(1)}h`,c:C.purple,bg:C.purpleLight},
+          {l:"Costo total",v:fmtCurrency(costoTotal),c:C.gold,bg:C.goldLight},
+          {l:"Costo por participante",v:fmtCurrency(costoParticipante),c:C.olive,bg:C.oliveLight},
+        ].map(s=>(
+          <div key={s.l} style={{background:s.bg,borderRadius:10,padding:"12px 16px"}}>
+            <div style={{fontSize:10,fontWeight:700,color:s.c,textTransform:"uppercase",letterSpacing:0.5}}>{s.l}</div>
+            <div style={{fontSize:18,fontWeight:800,color:s.c,marginTop:4}}>{s.v}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+        {/* Género */}
+        <div style={styles.card}>
+          <div style={{fontWeight:700,fontSize:13,marginBottom:14,color:C.slate}}>Por género</div>
+          {Object.entries(generos).map(([gen,cnt])=>{
+            if(cnt===0) return null;
+            const pct = partics.length>0?Math.round((cnt/partics.length)*100):0;
+            const color = gen==="Masculino"?C.slate:gen==="Femenino"?C.terra:C.muted;
+            return (
+              <div key={gen} style={{marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                  <span style={{fontSize:13}}>{gen}</span>
+                  <span style={{fontWeight:700,color}}>{cnt} ({pct}%)</span>
+                </div>
+                <div style={{height:8,background:C.bg,borderRadius:4,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:4,transition:"width .5s"}}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Grupos de edad */}
+        <div style={styles.card}>
+          <div style={{fontWeight:700,fontSize:13,marginBottom:14,color:C.slate}}>Por grupo de edad</div>
+          {GRUPOS_ORDEN.map((g,i)=>{
+            const cnt = grupos[g]||0;
+            if(cnt===0) return null;
+            const pct = Math.round((cnt/partics.length)*100);
+            return (
+              <div key={g} style={{marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                  <span style={{fontSize:12}}>{g}</span>
+                  <span style={{fontWeight:700,color:COLORES_EDAD[i]}}>{cnt} ({pct}%)</span>
+                </div>
+                <div style={{height:8,background:C.bg,borderRadius:4,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${pct}%`,background:COLORES_EDAD[i],borderRadius:4}}/>
+                </div>
+              </div>
+            );
+          })}
+          {Object.keys(grupos).length===0&&<div style={{color:C.muted,fontSize:13}}>Sin datos de edad registrados.</div>}
+        </div>
       </div>
     </div>
   );
