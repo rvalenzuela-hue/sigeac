@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { db } from "./firebase";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
+import { getRolInfo, puedeModificar, esAdmin, puedeVerArea, puedeVerAsociacion } from "./auth";
 
 // ─── PALETA ──────────────────────────────────────────────────────────────────
 const C = {
@@ -56,7 +58,8 @@ const INITIAL_STATE = {
   consecutivoGlobal: 0,
 };
 
-const TIPO_APOYO    = ["Económico","Material","Alimentario","Médico","Educativo","Jurídico","Otro"];
+const LOGOS_ASOC = { "A1": "/logo-fbs.png", "A2": "/logo-acj.png" };
+const LOGOS_AREA = { "AR1": "/logo-bacum.png", "AR2": "/logo-caborca.png" };
 const TIPO_EVENTO   = ["Taller","Curso","Capacitación","Conferencia","Festejo","Asamblea","Actividad deportiva","Otro"];
 const SEXO          = ["Masculino","Femenino","No especificado"];
 
@@ -179,7 +182,7 @@ function Dashboard({data}) {
           return (
             <div key={asoc.id} style={{...styles.card,borderTop:`4px solid ${asoc.color}`}}>
               <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
-                <Icon name="building" size={18}/>
+                {LOGOS_ASOC[asoc.id]&&<img src={LOGOS_ASOC[asoc.id]} alt={asoc.nombre} style={{height:36,objectFit:"contain"}}/>}
                 <span style={{fontSize:15,fontWeight:700}}>{asoc.nombre}</span>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:16}}>
@@ -940,11 +943,64 @@ const NAV=[
   {id:"config",label:"Configuración",icon:"map",section:"Sistema"},
 ];
 
+// ─── PANTALLA DE LOGIN ────────────────────────────────────────────────────────
+function Login({onLogin}) {
+  const [email,setEmail]=useState("");
+  const [pass,setPass]=useState("");
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+
+  async function handleLogin() {
+    if(!email.trim()||!pass.trim()) return setError("Ingresa tu correo y contraseña.");
+    setLoading(true); setError("");
+    try {
+      const auth=getAuth();
+      const cred=await signInWithEmailAndPassword(auth,email,pass);
+      const rolInfo=getRolInfo(cred.user.email);
+      if(!rolInfo) { await signOut(auth); return setError("Tu cuenta no tiene acceso configurado. Contacta al administrador."); }
+      onLogin(cred.user, rolInfo);
+    } catch(e) {
+      setError("Correo o contraseña incorrectos.");
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div style={{minHeight:"100vh",background:C.slate,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:C.surface,borderRadius:16,padding:"40px 36px",width:"100%",maxWidth:400,boxShadow:"0 24px 60px rgba(0,0,0,.3)"}}>
+        <div style={{textAlign:"center",marginBottom:32}}>
+          <img src="/logo-sgac.png" alt="SGAC" style={{width:100,marginBottom:16,borderRadius:8}}/>
+          <div style={{fontSize:28,fontWeight:800,color:C.slate,marginBottom:4}}>SGAC</div>
+          <div style={{fontSize:13,color:C.muted}}>Sistema de Gestión de Asociaciones Civiles</div>
+        </div>
+        <div style={{marginBottom:16}}>
+          <label style={styles.label}>Correo electrónico</label>
+          <input style={styles.input} type="email" placeholder="tu@correo.com" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()}/>
+        </div>
+        <div style={{marginBottom:20}}>
+          <label style={styles.label}>Contraseña</label>
+          <input style={styles.input} type="password" placeholder="••••••••" value={pass} onChange={e=>setPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()}/>
+        </div>
+        {error&&<div style={{background:C.dangerLight,color:C.danger,borderRadius:8,padding:"10px 14px",fontSize:13,marginBottom:16}}>{error}</div>}
+        <button style={{...styles.btn(),width:"100%",justifyContent:"center",padding:"12px"}} onClick={handleLogin} disabled={loading}>
+          {loading?"Ingresando...":"Ingresar →"}
+        </button>
+        <div style={{textAlign:"center",marginTop:20,fontSize:11,color:C.muted}}>
+          Fundación Borquez Schwarzbeck · Comercio Justo Campos Bórquez
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [view,setView]=useState("dashboard");
   const [data,setData]=useState(null);
   const [loading,setLoading]=useState(true);
   const [menuOpen,setMenuOpen]=useState(false);
+  const [usuario,setUsuario]=useState(null);
+  const [rolInfo,setRolInfo]=useState(null);
+  const [authChecked,setAuthChecked]=useState(false);
 
   useEffect(()=>{
     // Cargar EmailJS
@@ -952,12 +1008,46 @@ export default function App() {
     script.src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js";
     script.onload=()=>window.emailjs.init("bW0siuepAncPncYKm");
     document.head.appendChild(script);
-    loadData().then(d=>{setData(d);setLoading(false);});
+
+    // Verificar sesión activa
+    const auth=getAuth();
+    const unsub=onAuthStateChanged(auth,user=>{
+      if(user){
+        const ri=getRolInfo(user.email);
+        if(ri){ setUsuario(user); setRolInfo(ri); loadData().then(d=>{setData(d);setLoading(false);}); }
+        else { signOut(auth); }
+      } else {
+        setLoading(false);
+      }
+      setAuthChecked(true);
+    });
+    return ()=>unsub();
   },[]);
 
-  if(loading||!data)return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:C.bg,color:C.muted,fontSize:14}}>Cargando SIGEAC...</div>;
+  function handleLogin(user,ri){
+    setUsuario(user); setRolInfo(ri);
+    loadData().then(d=>{setData(d);setLoading(false);});
+  }
 
-  const sections=[...new Set(NAV.map(n=>n.section))];
+  async function handleLogout(){
+    const auth=getAuth();
+    await signOut(auth);
+    setUsuario(null); setRolInfo(null); setData(null); setLoading(true);
+  }
+
+  if(!authChecked||loading) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:C.bg,color:C.muted,fontSize:14}}>Cargando SIGEAC...</div>;
+  if(!usuario||!rolInfo) return <Login onLogin={handleLogin}/>;
+  if(!data) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:C.bg,color:C.muted,fontSize:14}}>Cargando datos...</div>;
+
+  // Filtrar nav según rol
+  const navVisible = NAV.filter(n=>{
+    if(n.id==="gastos") return rolInfo.rol==="admin"||rolInfo.verGastos||rolInfo.rol==="admin_acj"||rolInfo.rol==="coordinador";
+    if(n.id==="config") return rolInfo.rol==="admin"||rolInfo.rol==="admin_acj";
+    return true;
+  });
+
+  const sections=[...new Set(navVisible.map(n=>n.section))];
+  const puedeEditar=puedeModificar(rolInfo);
 
   // Sidebar responsive
   const sidebarStyle = {
@@ -986,14 +1076,24 @@ export default function App() {
 
       <div style={sidebarStyle}>
         <div style={styles.sidebarLogo}>
-          <div style={styles.sidebarLogoTitle}>SIGEAC</div>
+          {/* Logo según asociación del usuario */}
+          {(rolInfo.rol==="admin"||rolInfo.asociaciones?.includes("A1")&&rolInfo.asociaciones?.includes("A2"))&&(
+            <img src="/logo-sgac.png" alt="SGAC" style={{width:60,marginBottom:10,borderRadius:6}}/>
+          )}
+          {rolInfo.asociaciones?.includes("A1")&&!rolInfo.asociaciones?.includes("A2")&&(
+            <img src="/logo-fbs.png" alt="FBS" style={{width:"100%",maxWidth:160,marginBottom:10,filter:"brightness(0) invert(1)",opacity:0.9}}/>
+          )}
+          {rolInfo.asociaciones?.includes("A2")&&!rolInfo.asociaciones?.includes("A1")&&(
+            <img src="/logo-acj.png" alt="ACJ" style={{width:60,marginBottom:10,borderRadius:6,background:"#fff",padding:4}}/>
+          )}
+          <div style={styles.sidebarLogoTitle}>SGAC</div>
           <div style={styles.sidebarLogoSub}>Sistema de Gestión AC</div>
         </div>
         <div style={{flex:1,padding:"12px 0"}}>
           {sections.map(sec=>(
             <div key={sec}>
               <div style={styles.sidebarSection}>{sec}</div>
-              {NAV.filter(n=>n.section===sec).map(n=>(
+              {navVisible.filter(n=>n.section===sec).map(n=>(
                 <div key={n.id} style={styles.sidebarItem(view===n.id)} onClick={()=>{setView(n.id);setMenuOpen(false);}}>
                   <Icon name={n.icon} size={15}/>{n.label}
                 </div>
@@ -1001,10 +1101,13 @@ export default function App() {
             </div>
           ))}
         </div>
-        <div style={{padding:"0 16px"}}>
-          <div style={{fontSize:11,color:"rgba(255,255,255,.3)",borderTop:"1px solid rgba(255,255,255,.1)",paddingTop:12}}>
-            {data.personas.length} personas · #{data.consecutivoGlobal||0}
-          </div>
+        <div style={{padding:"12px 16px"}}>
+          <div style={{fontSize:11,color:"rgba(255,255,255,.5)",marginBottom:4}}>{rolInfo.nombre}</div>
+          <div style={{fontSize:10,color:"rgba(255,255,255,.3)",marginBottom:10,wordBreak:"break-all"}}>{usuario.email}</div>
+          {!puedeEditar&&<div style={{...styles.badge(C.gold,C.goldLight),fontSize:10,marginBottom:10}}>Solo lectura</div>}
+          <button onClick={handleLogout} style={{...styles.btn("ghost"),color:"rgba(255,255,255,.5)",fontSize:12,padding:"6px 0",width:"100%",justifyContent:"flex-start"}}>
+            <Icon name="lock" size={13}/> Cerrar sesión
+          </button>
         </div>
       </div>
 
