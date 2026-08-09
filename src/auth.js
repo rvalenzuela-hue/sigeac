@@ -1,5 +1,3 @@
-// ─── CONFIGURACIÓN DE ROLES ───────────────────────────────────────────────────
-// Cada correo tiene asignado un rol y el área a la que pertenece
 export const ROLES_CONFIG = {
   "rvalenzuela@fundacionborquezschwarzbeck.org": {
     rol: "admin",
@@ -50,21 +48,17 @@ export const ROLES_CONFIG = {
 export function getRolInfo(email) {
   return ROLES_CONFIG[email] || null;
 }
-
 export function puedeModificar(rolInfo) {
   return !rolInfo?.soloLectura;
 }
-
 export function esAdmin(rolInfo) {
   return rolInfo?.rol === "admin";
 }
-
 export function puedeVerArea(rolInfo, areaId) {
   if (!rolInfo) return false;
   if (rolInfo.rol === "admin") return true;
   return rolInfo.areas?.includes(areaId);
 }
-
 export function puedeVerAsociacion(rolInfo, asociacionId) {
   if (!rolInfo) return false;
   if (rolInfo.rol === "admin") return true;
