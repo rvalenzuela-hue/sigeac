@@ -62,8 +62,24 @@ async function loadData() {
   return INITIAL_STATE;
 }
 
+function cleanData(obj) {
+  if (Array.isArray(obj)) return obj.map(cleanData);
+  if (obj && typeof obj === "object") {
+    const clean = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (v !== undefined) clean[k] = cleanData(v);
+    }
+    return clean;
+  }
+  return obj;
+}
+
 async function saveData(data) {
-  try { await setDoc(DOC_REF(), data); } catch(e) { console.error(e); }
+  try {
+    await setDoc(DOC_REF(), cleanData(data));
+  } catch(e) {
+    console.error("Firebase saveData error:", e);
+  }
 }
 
 // ─── UTILIDADES ───────────────────────────────────────────────────────────────
